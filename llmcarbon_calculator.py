@@ -142,7 +142,7 @@ def main():
     hw_group.add_argument('--device', type=str, default='V100', choices=OperationalCarbonModel.HARDWARE_PRESETS.keys(), help=f'運算裝置類型 (預設: V100)')
     hw_group.add_argument('--device-num', type=int, default=10000, help='運算裝置總數量 (預設: 10000)')
     hw_group.add_argument('--system-power-w', type=float, default=330, help='單一裝置的平均系統功耗 (W) (包含主機等) (預設: 330)')
-    hw_group.add_argument('--hardware-efficiency-perc', type=float, default=19.7, help='硬體效率 (%) (預設: 19.7)')
+    hw_group.add_argument('--hardware-efficiency-perc', type=float, default=19.7, help='硬體效率 (%%) (預設: 19.7)')
     hw_group.add_argument('--pue', type=float, default=1.1, help='資料中心的 PUE 值 (預設: 1.1)')
     hw_group.add_argument('--co2-intensity-g-kwh', type=float, default=429, help='電網碳強度 (gCO₂eq/kWh) (預設: 429, 美國平均)')
     
