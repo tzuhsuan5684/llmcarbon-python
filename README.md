@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 LLM 碳足跡計算工具
 這是一個基於 LLMCarbon 論文的命令列工具，可以快速估算大型語言模型（LLM）在訓練過程中的營運碳排與隱含碳排。
 
@@ -45,3 +46,6 @@ python llmcarbon_calculator.py \
 python llmcarbon_calculator.py --help
 
 這將會列出所有可設定的項目，包括模型設定、硬體與資料中心設定等。
+=======
+111111
+>>>>>>> b1e651d7c78b193e337c3dc98f2453e509cc36ce
