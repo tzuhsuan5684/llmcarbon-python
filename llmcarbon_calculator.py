@@ -1,170 +1,177 @@
 # -*- coding: utf-8 -*-
 import argparse
-import pandas as pd
-import os
 
-# --- 核心計算邏輯 ---
+# --- 基礎設定與通用邏輯 ---
 
-class OperationalCarbonModel:
+class LLMCarbonCalculatorBase:
     """
-    負責計算營運碳排 (Operational Carbon Footprint)。
-    此部分的計算邏輯基於 Faiz et al., 2024 的 LLMCarbon 論文。
+    計算模型的基礎類別，包含共享的參數與設定。
     """
-
     # 預設硬體參數 (參考 LLMCarbon 論文 Table 4 & 相關資料)
     HARDWARE_PRESETS = {
-        'V100': {'peak_tflops': 125, 'tdp_w': 300},
-        'H100': {'peak_tflops': 1979, 'tdp_w': 700},
-        'TPUv3': {'peak_tflops': 123, 'tdp_w': 450},
-        'TPUv4': {'peak_tflops': 275, 'tdp_w': 175},
-        'A100': {'peak_tflops': 624, 'tdp_w': 400}, # A100 SXM4 80GB
+        'V100': {'peak_tflops': 125},
+        'H100': {'peak_tflops': 1979},
+        'TPUv3': {'peak_tflops': 123},
+        'TPUv4': {'peak_tflops': 275},
+        'A100': {'peak_tflops': 312}, 
     }
 
     def __init__(self, args):
         self.args = args
         self.preset = self.HARDWARE_PRESETS.get(args.device)
         if not self.preset:
-            raise ValueError(f"不支援的硬體裝置: {args.device}。請從 {list(self.HARDWARE_PRESETS.keys())} 中選擇。")
+            raise ValueError(
+                f"不支援的硬體裝置: {args.device}。"
+                f"請從 {list(self.HARDWARE_PRESETS.keys())} 中選擇。"
+            )
 
-    def _calculate_total_flops(self):
-        """根據論文公式 4: TC ≈ 6PD 計算總 FLOPs"""
-        active_params_b = self.args.base_model_params_b if self.args.model_type == 'MoE' else self.args.parameters_b
-        # 單位轉換: P (Billion), D (Trillion) -> 1e9 * 1e12 = 1e21 (Zetta)
-        total_zettaflops = 6 * active_params_b * self.args.tokens_t / 1000 # 修正原始論文的單位表示
-        return total_zettaflops * 1e21
-
-    def _calculate_training_days(self, total_flops):
-        """根據論文公式 7 計算訓練所需天數"""
-        achieved_tflops_per_second = self.preset['peak_tflops'] * (self.args.hardware_efficiency_perc / 100)
-        if achieved_tflops_per_second == 0 or self.args.device_num == 0:
-            return 0
-        training_seconds = total_flops / (self.args.device_num * achieved_tflops_per_second * 1e12)
-        return training_seconds / (3600 * 24)
-
-    def calculate(self):
-        """計算總營運碳排 (tCO₂eq)"""
-        total_flops = self._calculate_total_flops()
-        training_days = self._calculate_training_days(total_flops)
-        
-        # 根據論文公式 8, 9, 10 計算
+    def _calculate_carbon_emission(self, execution_days):
+        """
+        根據執行天數計算總耗電量與碳排 (通用邏輯)。
+        """
         total_power_kw = (self.args.system_power_w * self.args.device_num) / 1000
-        total_energy_kwh = total_power_kw * (training_days * 24) * self.args.pue
-        
-        # 將 gCO₂eq/kWh 轉換為 tCO₂eq/MWh
-        # (g/kWh) * (1 MWh / 1000 kWh) * (1 t / 1,000,000 g) = t / MWh
-        carbon_intensity_t_per_mwh = self.args.co2_intensity_g_kwh / 1000 
-        
-        operational_co2_t = (total_energy_kwh / 1000) * carbon_intensity_t_per_mwh
+        total_energy_kwh = total_power_kw * (execution_days * 24) * self.args.pue
+        total_energy_mwh = total_energy_kwh / 1000
+
+        carbon_intensity_t_per_kwh = self.args.co2_intensity_g_kwh / 1_000_000
+        operational_co2_t = total_energy_kwh * carbon_intensity_t_per_kwh
         
         return {
             "operational_co2_t": operational_co2_t,
-            "training_days": training_days,
-            "total_energy_mwh": total_energy_kwh / 1000
+            "total_energy_mwh": total_energy_mwh
         }
 
+    def run(self):
+        """主執行方法，由子類別實現"""
+        raise NotImplementedError("子類別必須實現 run() 方法")
 
-class EmbodiedCarbonModel:
+
+# --- 訓練碳排計算邏輯 ---
+
+class TrainingCarbonCalculator(LLMCarbonCalculatorBase):
     """
-    負責計算隱含碳排 (Embodied Carbon Footprint)。
-    此部分邏輯基於原始碼 embodied.py。
+    專門計算 LLM 訓練階段的營運碳排。
     """
-    def __init__(self, hardware_data_path, training_days):
-        if not os.path.exists(hardware_data_path):
-            raise FileNotFoundError(f"找不到硬體數據文件: {hardware_data_path}")
-        self.hardware_df = pd.read_csv(hardware_data_path)
-        self.training_days = training_days
-        self.hardware_lifespan_days = 5 * 365 # 根據論文，硬體生命週期為 5 年
-
-    def calculate(self):
-        """計算總隱含碳排 (tCO₂eq)"""
-        # 根據論文公式 12
-        time_ratio = self.training_days / self.hardware_lifespan_days
+    def run(self):
+        """執行訓練碳排計算"""
+        # 根據論文公式 4: TC ≈ 6PD
+        flop_multiplier = 6
+        active_params_b = self.args.base_model_params_b if self.args.model_type == 'MoE' else self.args.parameters_b
         
-        # 計算每種硬體的隱含碳排 (kgCO2eq)
-        self.hardware_df['embodied_co2_kg'] = self.hardware_df['unit (cm2 or GB)'] * \
-                                              self.hardware_df['CPA (kgCO2/cm2 or GB)'] * \
-                                              self.hardware_df['num']
-                                              
-        # 依據使用時間比例計算，並加總
-        total_embodied_co2_kg = self.hardware_df['embodied_co2_kg'].sum()
+        # 單位: P (Billion), D (Trillion)
+        total_zettaflops = flop_multiplier * active_params_b * self.args.train_tokens_t
+        total_flops = total_zettaflops * 1e21
+
+        achieved_tflops_per_second = self.preset['peak_tflops'] * (self.args.hardware_efficiency_perc / 100)
         
-        # 將其他組件 (主機板、機殼等) 的碳排也算進去 (根據論文，約佔 15%)
-        # 這裡的計算方式參考了原始論文的 Table 5
-        # 假設 'others' 佔總伺服器碳排(不含GPU)的15%
-        # 這裡簡化處理，直接使用論文中的比例，因詳細計算需要伺服器BOM表
-        total_embodied_co2_kg_with_others = total_embodied_co2_kg / (1 - 0.15)
+        if achieved_tflops_per_second == 0 or self.args.device_num == 0:
+            execution_days = 0
+        else:
+            execution_seconds = total_flops / (self.args.device_num * achieved_tflops_per_second * 1e12)
+            execution_days = execution_seconds / (3600 * 24)
+
+        results = self._calculate_carbon_emission(execution_days)
+        results['execution_days'] = execution_days
+        return results
+
+
+# --- 推論碳排計算邏輯 ---
+
+class InferenceCarbonCalculator(LLMCarbonCalculatorBase):
+    """
+    專門計算 LLM 推論階段的營運碳排。
+    """
+    def run(self):
+        """執行推論碳排計算"""
+        # 根據論文公式 5: IC ≈ 2PD
+        flop_multiplier = 2
+        active_params_b = self.args.base_model_params_b if self.args.model_type == 'MoE' else self.args.parameters_b
+
+        # 單位轉換: P (Billion), D (Thousand) -> (1e9 * 1e3)
+        # 為了與 ZettaFLOPs 對應，先將 K 轉為 T (除以 1e9)
+        tokens_t = self.args.infer_tokens_k / 1_000_000_000
         
-        # 最終的隱含碳排(噸)
-        embodied_co2_t = (total_embodied_co2_kg_with_others * time_ratio) / 1000
-        
-        return embodied_co2_t
+        total_zettaflops = flop_multiplier * active_params_b * tokens_t
+        total_flops = total_zettaflops * 1e21
+
+        achieved_tflops_per_second = self.preset['peak_tflops'] * (self.args.hardware_efficiency_perc / 100)
+
+        if achieved_tflops_per_second == 0 or self.args.device_num == 0:
+            execution_days = 0
+        else:
+            execution_seconds = total_flops / (self.args.device_num * achieved_tflops_per_second * 1e12)
+            execution_days = execution_seconds / (3600 * 24)
+            
+        results = self._calculate_carbon_emission(execution_days)
+        # 推論時間通常較短，轉換為秒或分鐘可能更合適
+        results['execution_seconds'] = execution_days * 24 * 3600
+        return results
 
 
-def calculate_carbon_footprint(args):
-    """主計算函式"""
-    # 1. 計算營運碳排
-    op_model = OperationalCarbonModel(args)
-    op_results = op_model.calculate()
-
-    # 2. 計算隱含碳排
-    # 注意: 這裡的 hardware.csv 是基於 Meta XLM 的範例，使用者需依實際情況修改
-    emb_model = EmbodiedCarbonModel('hardware.csv', op_results['training_days'])
-    embodied_co2_t = emb_model.calculate()
-
-    # 3. 整合結果
-    total_co2_t = op_results['operational_co2_t'] + embodied_co2_t
-    
-    return {
-        "operational_co2_t": op_results['operational_co2_t'],
-        "embodied_co2_t": embodied_co2_t,
-        "total_co2_t": total_co2_t,
-        "training_days": op_results['training_days'],
-        "total_energy_mwh": op_results['total_energy_mwh']
-    }
-
+# --- 命令列介面與主程式 ---
 
 def main():
-    """命令列介面"""
+    """主程式進入點"""
     parser = argparse.ArgumentParser(
-        description="LLM 碳足跡計算工具 (命令列版)",
+        description="LLM 營運碳足跡計算工具 (獨立 Token 參數版)",
         formatter_class=argparse.RawTextHelpFormatter
     )
     
-    # --- 分隔線: LLM 模型設定 ---
-    model_group = parser.add_argument_group('1. LLM 模型設定')
-    model_group.add_argument('--model-type', type=str, default='dense', choices=['dense', 'MoE'], help='模型類型 (預設: dense)')
-    model_group.add_argument('--parameters-b', type=float, default=175, help='模型總參數數量 (單位: 十億 B) (預設: 175)')
-    model_group.add_argument('--base-model-params-b', type=float, default=2.3, help='MoE 模型的基礎模型參數數量 (B) (預設: 2.3)')
-    model_group.add_argument('--tokens-t', type=float, default=300, help='處理的 Token 總數 (單位: 兆 T) (預設: 300)')
-    
-    # --- 分隔線: 硬體與資料中心設定 ---
-    hw_group = parser.add_argument_group('2. 硬體與資料中心設定')
-    hw_group.add_argument('--device', type=str, default='V100', choices=OperationalCarbonModel.HARDWARE_PRESETS.keys(), help=f'運算裝置類型 (預設: V100)')
-    hw_group.add_argument('--device-num', type=int, default=10000, help='運算裝置總數量 (預設: 10000)')
-    hw_group.add_argument('--system-power-w', type=float, default=330, help='單一裝置的平均系統功耗 (W) (包含主機等) (預設: 330)')
-    hw_group.add_argument('--hardware-efficiency-perc', type=float, default=19.7, help='硬體效率 (%%) (預設: 19.7)')
-    hw_group.add_argument('--pue', type=float, default=1.1, help='資料中心的 PUE 值 (預設: 1.1)')
-    hw_group.add_argument('--co2-intensity-g-kwh', type=float, default=429, help='電網碳強度 (gCO₂eq/kWh) (預設: 429, 美國平均)')
+    subparsers = parser.add_subparsers(dest='mode', required=True, help='選擇計算模式: train (訓練) 或 infer (推論)')
+
+    # --- 通用參數 ---
+    def add_common_args(p):
+        model_group = p.add_argument_group('1. LLM 模型設定')
+        model_group.add_argument('--model-type', type=str, default='dense', choices=['dense', 'MoE'], help='模型類型 (預設: dense)')
+        model_group.add_argument('--parameters-b', type=float, default=175, help='模型總參數數量 (單位: 十億 B) (預設: 175)')
+        model_group.add_argument('--base-model-params-b', type=float, default=2.3, help='MoE 模型的基礎模型參數數量 (B) (預設: 2.3)')
+        
+        hw_group = p.add_argument_group('2. 硬體與資料中心設定')
+        hw_group.add_argument('--device', type=str, default='V100', choices=LLMCarbonCalculatorBase.HARDWARE_PRESETS.keys(), help=f'運算裝置類型 (預設: V100)')
+        hw_group.add_argument('--device-num', type=int, default=10000, help='運算裝置總數量 (預設: 10000)')
+        hw_group.add_argument('--system-power-w', type=float, default=330, help='單一裝置的平均系統功耗 (W) (預設: 330)')
+        hw_group.add_argument('--hardware-efficiency-perc', type=float, default=19.7, help='硬體效率 (%%) (預設: 19.7)')
+        hw_group.add_argument('--pue', type=float, default=1.1, help='資料中心的 PUE 值 (預設: 1.1)')
+        hw_group.add_argument('--co2-intensity-g-kwh', type=float, default=429, help='電網碳強度 (gCO₂eq/kWh) (預設: 429, 美國平均)')
+
+    # --- 建立 'train' 子命令與其專屬參數 ---
+    parser_train = subparsers.add_parser('train', help='計算訓練階段的碳足跡')
+    add_common_args(parser_train)
+    parser_train.add_argument('--train-tokens-t', type=float, default=300, help='[訓練專用] 處理的 Token 總數 (單位: 兆 T) (預設: 300)')
+
+    # --- 建立 'infer' 子命令與其專屬參數 ---
+    parser_infer = subparsers.add_parser('infer', help='計算推論階段的碳足跡')
+    add_common_args(parser_infer)
+    parser_infer.add_argument('--infer-tokens-k', type=float, default=5, help='[推論專用] 處理的 Token 總數 (單位: 千 K) (預設: 5)')
     
     args = parser.parse_args()
 
-    # 執行計算
+    # --- 執行計算與輸出 ---
     try:
-        results = calculate_carbon_footprint(args)
-        
-        # 格式化輸出
-        print("\n" + "="*40)
-        print("LLM 碳足跡計算結果".center(40))
-        print("="*40)
-        print(f"  營運碳排 (Operational): {results['operational_co2_t']:.2f} tCO₂eq")
-        print(f"  隱含碳排 (Embodied):    {results['embodied_co2_t']:.2f} tCO₂eq")
-        print("-" * 40)
-        print(f"  總碳足跡 (Total):       {results['total_co2_t']:.2f} tCO₂eq")
-        print("="*40)
-        print("\n詳細資訊:")
-        print(f"  - 預估訓練天數: {results['training_days']:.2f} 天")
-        print(f"  - 總消耗電量:   {results['total_energy_mwh']:.2f} MWh")
-        print("\n")
+        if args.mode == 'train':
+            calculator = TrainingCarbonCalculator(args)
+            results = calculator.run()
+            
+            print("\n" + "="*50)
+            print("LLM 訓練 (Training) 碳足跡計算結果".center(50))
+            print("="*50)
+            print(f"  - 預估訓練時間: {results['execution_days']:.2f} 天")
+            print(f"  - 總消耗電量:   {results['total_energy_mwh']:.2f} MWh")
+            print(f"  - 營運碳排:     {results['operational_co2_t']:.4f} tCO₂eq")
+
+        elif args.mode == 'infer':
+            calculator = InferenceCarbonCalculator(args)
+            results = calculator.run()
+            
+            print("\n" + "="*50)
+            print("LLM 推論 (Inference) 碳足跡計算結果".center(50))
+            print("="*50)
+            print(f"  - 預估執行時間: {results['execution_seconds']:.2f} 秒")
+            print(f"  - 總消耗電量:   {results['total_energy_mwh']:.6f} MWh")
+            print(f"  - 營運碳排:     {results['operational_co2_t']:.6f} tCO₂eq")
+
+        print("="*50)
+        print("\n免責聲明：此為基於 LLMCarbon 研究的估算值，實際碳排可能因多種因素而異。\n")
 
     except Exception as e:
         print(f"\n計算過程中發生錯誤: {e}")
