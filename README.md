@@ -39,7 +39,7 @@ python llmcarbon_calculator.py infer \
     --device A100 \
     --device-num 8
 ```
-#### 參數說明  
+### 參數說明  
 您可以使用 `-h` 或 `--help` 來查看所有可用的參數。
 ```bash
 # 查看通用說明與模式選項
