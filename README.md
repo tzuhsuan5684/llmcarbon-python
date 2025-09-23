@@ -1,4 +1,4 @@
-### LLM 碳足跡計算工具 (LLM Carbon Calculator)
+## LLM 碳足跡計算工具 (LLM Carbon Calculator)
 這是一個基於命令列的 Python 工具，用於估算大型語言模型 (LLM) 在訓練 (training) 和推論 (inference) 階段的營運碳足跡。計算方法主要參考了 LLMCarbon: Modeling the End-to-End Carbon Footprint of Large Language Models 研究論文中的簡化模型，讓使用者可以快速評估不同模型大小、硬體配置和使用情境下的碳排放量。
 ### ✨ 主要功能
 * 🧮 雙模式計算：可分別計算模型訓練與推論兩個不同階段的碳足跡。  
